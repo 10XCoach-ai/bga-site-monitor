@@ -22,6 +22,10 @@ on:
         description: "An article was removed on purpose: take today's sitemap as the new baseline"
         type: boolean
         default: false
+      prove_alerts:
+        description: "Prove the alert emails actually arrive (sends one DOWN and one RECOVERED, to ALERT_TO)"
+        type: boolean
+        default: false
 
 # Never let two checks write the state at the same time.
 concurrency:
@@ -33,6 +37,7 @@ permissions:
 
 jobs:
   check:
+    if: ${{ !inputs.prove_alerts }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -88,3 +93,64 @@ jobs:
         run: |
           echo "The site check failed; see the step summary for what is wrong."
           exit 1
+
+  # Proves the whole alert chain end-to-end: a real failing check, the real composeEmail, the real
+  # Resend call, to the real ALERT_TO. Run it by hand after changing the key, the sender domain or
+  # the recipient — a present RESEND_API_KEY is NOT evidence that mail arrives.
+  #
+  # It cannot disturb the monitor: it never touches the Actions cache, so the real "was the site
+  # down, which articles existed" state is neither read nor written. It keeps its own throwaway
+  # state under proof/ and the runner is destroyed afterwards.
+  prove:
+    if: ${{ inputs.prove_alerts }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      # A host that does not resolve. Every page fails, so the check reports DOWN for real —
+      # nothing is faked, and the email is composed by the same code a true outage would use.
+      - name: "1/2 · a failing site, from no previous state → expect a DOWN email"
+        env:
+          SITE_URL: https://monitor-proof-no-such-host.businessgrowth-alliance.com
+          STATE_FILE: proof/state.json
+          RESULT_FILE: proof/result.json
+          RETRY_DELAY_MS: "0"
+        run: node src/check.mjs || true
+
+      - name: "1/2 · send it"
+        env:
+          RESULT_FILE: proof/result.json
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO: ${{ vars.ALERT_TO }}
+          ALERT_FROM: ${{ vars.ALERT_FROM }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node src/notify.mjs
+
+      # Same throwaway state, now remembering "down", pointed back at the real site.
+      - name: "2/2 · the real site, from that down state → expect a RECOVERED email"
+        env:
+          STATE_FILE: proof/state.json
+          RESULT_FILE: proof/result.json
+          RETRY_DELAY_MS: "0"
+        run: node src/check.mjs
+
+      - name: "2/2 · send it"
+        env:
+          RESULT_FILE: proof/result.json
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO: ${{ vars.ALERT_TO }}
+          ALERT_FROM: ${{ vars.ALERT_FROM }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node src/notify.mjs
+
+      - name: What this proved
+        run: |
+          echo "Two emails were attempted to ALERT_TO: one DOWN, one RECOVERED."
+          echo "If both arrived, the key, the sender domain and the recipient are all good."
+          echo "The monitor's own state was never read or written: no cache step runs in this job."

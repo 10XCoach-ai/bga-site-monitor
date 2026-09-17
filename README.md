@@ -44,20 +44,15 @@ In **Settings → Secrets and variables → Actions**:
 Without the secret, the check still runs and a failing run still turns red. GitHub emails a red
 scheduled run to whoever last changed the schedule, so that becomes the only alert.
 
-## ⚠️ Decide before merging: Actions minutes
+## Actions minutes — why this repository is public
 
-The schedule only starts once this is on the default branch. **It ships at every 2 hours** (about
-360–720 minutes a month), because that is safe in either case. Every 30 minutes, which is what an
-outage alert really wants, is 48 runs a day, **roughly 1,400–2,900 minutes a month**.
+It runs **every 30 minutes**, which is 48 runs a day, or roughly 1,400–2,900 minutes a month.
 
-- **Private repository:** those minutes come out of the organisation's free 2,000 a month. That quota
-  is shared with every other private repository, **including the platform's production deploy**.
-  September 2026 was already on course for ~1,500 minutes without this.
-  - To run every 30 minutes privately, add a spending limit or payment method first.
-- **Public repository:** standard runners cost no minutes, so every 30 minutes is free. The repository would expose this code and
-  the site's public address, but no secrets: Actions secrets are never shown.
-  - Note: GitHub turns off scheduled workflows on a public repository after 60 days without a commit.
-    It emails a warning first.
+- **Public repositories** use standard runners at no cost in Actions minutes. That is why this one is public (decided 2026-09-17).
+- **Private repositories** share the organisation's free 2,000 minutes a month, **and so does the platform's production deploy**. September 2026 was already on course for ~1,550 without this check. Running it privately at this frequency would risk stopping deploys until the month resets.
+  - ⚠️ **If this repository is ever made private, lower the schedule in `.github/workflows/monitor.yml` first**, or add a payment method.
+- Only this code and the site's public address are visible. The Resend key is an Actions secret, and secrets are never shown.
+- ⚠️ GitHub turns off scheduled workflows on a public repository after **60 days without a commit**. It emails a warning first. Re-enable the workflow from the Actions tab, or push any commit.
 
 ## When an article is removed on purpose
 

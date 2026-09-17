@@ -2,11 +2,11 @@ name: Site check
 
 on:
   schedule:
-    # Every 2 hours — a deliberately safe default for a PRIVATE repository, whose minutes are shared
-    # with the platform's production deploy (see README, "Decide before merging").
-    # For every 30 minutes use "7,37 * * * *", only once the minutes question is settled.
-    # GitHub also starts scheduled runs late under load, often by 5–15 minutes.
-    - cron: "7 */2 * * *"
+    # Every 30 minutes. This repository is PUBLIC, so standard runners cost no Actions minutes.
+    # ⚠️ If it is ever made private again, lower this first: private minutes are shared with the
+    # platform's production deploy (see README, "Actions minutes").
+    # GitHub starts scheduled runs late under load, often by 5–15 minutes.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       accept_articles:

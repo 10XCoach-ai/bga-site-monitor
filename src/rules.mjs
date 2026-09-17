@@ -105,3 +105,42 @@ export function transition(previousDown, down) {
   if (!down && previousDown) return "recovered";
   return null;
 }
+
+/**
+ * How long the site went unwatched, and whether that is worth saying out loud.
+ *
+ * ⚠️ This is NOT a judgement about the site. It is a judgement about the MONITOR. GitHub runs
+ * scheduled workflows on a best-effort basis and drops them freely under load: on 2026-09-17 this
+ * repository was measured at **1 scheduled run out of 14 due** over its first seven hours. A check
+ * that silently does not run looks exactly like a check that keeps passing, which is the one failure
+ * a monitor must never have. So every run reports the gap since the last one, and a DOWN email
+ * carries it too — an alert is only as fresh as the check behind it.
+ *
+ *   previousCheckedAt — ISO string from the last run's state, or null/undefined on the first run
+ *   checkedAt — ISO string for this run
+ *   expectedEveryMinutes — the schedule's interval
+ *   toleranceFactor — how many intervals may pass before it is worth reporting
+ *
+ * Returns { minutes, blind, note } — `minutes` is null on the first run; `note` is null when the
+ * gap is unremarkable.
+ */
+export function judgeCoverage({ previousCheckedAt, checkedAt, expectedEveryMinutes, toleranceFactor = 3 }) {
+  const then = Date.parse(previousCheckedAt ?? "");
+  const now = Date.parse(checkedAt ?? "");
+  if (!Number.isFinite(then) || !Number.isFinite(now)) return { minutes: null, blind: false, note: null };
+  const minutes = Math.round(((now - then) / 60_000) * 10) / 10;
+  // A clock that runs backwards (a re-run of an older state) is not a gap.
+  if (minutes < 0) return { minutes: null, blind: false, note: null };
+  const allowed = expectedEveryMinutes * toleranceFactor;
+  if (minutes <= allowed) return { minutes, blind: false, note: null };
+  const hours = minutes / 60;
+  const spell = hours >= 1 ? `${hours.toFixed(1)} hours` : `${Math.round(minutes)} minutes`;
+  return {
+    minutes,
+    blind: true,
+    note:
+      `nobody checked this site for ${spell} before this run ` +
+      `(the schedule asks for every ${expectedEveryMinutes} minutes). ` +
+      `The site was not being watched for that period — this is GitHub's scheduler, not the site.`,
+  };
+}

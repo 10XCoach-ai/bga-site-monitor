@@ -7,19 +7,22 @@
 //   CHROME_PATH     a Chrome/Chromium binary; found automatically on GitHub's runners and macOS
 //   RETRY_DELAY_MS  default 60000 — failed pages are opened once more after this wait
 //   ACCEPT_ARTICLES "true" = take today's sitemap as the new article baseline (after a deliberate removal)
+//   EXPECTED_EVERY_MINUTES  default 10 — the schedule's interval, used only to report how long the
+//                           site went unwatched when GitHub skips scheduled runs (it does, often)
 //
 // Exit code: 0 up, 1 down, 2 the check itself could not run (no browser, no network).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import puppeteer from "puppeteer-core";
-import { articleSlug, judgePage, judgeSite, nextArticles, parseSitemap, transition } from "./rules.mjs";
+import { articleSlug, judgeCoverage, judgePage, judgeSite, nextArticles, parseSitemap, transition } from "./rules.mjs";
 
 const SITE_URL = (process.env.SITE_URL || "https://businessgrowth-alliance.com").replace(/\/+$/, "");
 const STATE_FILE = process.env.STATE_FILE || "state/state.json";
 const RESULT_FILE = process.env.RESULT_FILE || "result.json";
 const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS ?? 60_000);
 const ACCEPT_ARTICLES = process.env.ACCEPT_ARTICLES === "true";
+const EXPECTED_EVERY_MINUTES = Number(process.env.EXPECTED_EVERY_MINUTES ?? 10);
 const PAGE_TIMEOUT_MS = 45_000;
 // Let client-side rendering finish (and fail, if it is going to) after the network settles.
 const SETTLE_MS = 2_500;
@@ -166,6 +169,15 @@ async function main() {
   const down = problems.length > 0;
   const change = transition(Boolean(previous?.down), down);
 
+  // How long the site went unwatched before this run. Deliberately NOT part of `problems`:
+  // the site being unwatched is a fault in the monitor, not in the site, and must never make a
+  // healthy site look down (or a DOWN alert fire for the wrong reason).
+  const coverage = judgeCoverage({
+    previousCheckedAt: previous?.checkedAt,
+    checkedAt: startedAt,
+    expectedEveryMinutes: EXPECTED_EVERY_MINUTES,
+  });
+
   const state = {
     checkedAt: startedAt,
     down,
@@ -175,10 +187,12 @@ async function main() {
   mkdirSync(dirname(STATE_FILE), { recursive: true });
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 
-  const result = { site: SITE_URL, checkedAt: startedAt, down, change, downSince: state.downSince, problems, pages: report };
+  const result = { site: SITE_URL, checkedAt: startedAt, down, change, downSince: state.downSince, problems, coverage, pages: report };
   writeFileSync(RESULT_FILE, JSON.stringify(result, null, 2));
 
   console.log(`${SITE_URL}: ${down ? "DOWN" : "up"} — ${report.length} pages checked${change ? `, change: ${change}` : ""}`);
+  if (coverage.minutes !== null) console.log(`  last checked ${coverage.minutes} minutes ago`);
+  if (coverage.blind) console.log(`  ⚠ ${coverage.note}`);
   for (const p of problems) console.log(`  ✗ ${p}`);
   const noisy = report.filter((r) => r.scriptErrors.length);
   for (const r of noisy) console.log(`  (script errors, not counted) ${r.url}: ${r.scriptErrors[0]}`);

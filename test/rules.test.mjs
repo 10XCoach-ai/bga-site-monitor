@@ -4,6 +4,7 @@ import { composeEmail } from "../src/notify.mjs";
 import {
   ERROR_PAGE_TEXT,
   articleSlug,
+  judgeCoverage,
   judgePage,
   judgeSite,
   nextArticles,
@@ -106,4 +107,70 @@ test("emails: one for down with the problems, one for recovery, none otherwise",
   assert.equal(up.subject, "RECOVERED: x.test");
   assert.match(up.text, /failing since 2026-09-17T09:00:00Z/);
   assert.equal(composeEmail({ ...base, change: null }), null);
+});
+
+const expectedEveryMinutes = 10;
+
+
+test("judgeCoverage: says nothing on the first run, when there is no previous check", () => {
+  const c = judgeCoverage({ previousCheckedAt: null, checkedAt: "2026-09-17T17:45:00Z", expectedEveryMinutes });
+  assert.equal(c.minutes, null);
+  assert.equal(c.blind, false);
+  assert.equal(c.note, null);
+});
+
+
+test("judgeCoverage: says nothing when the schedule is being kept", () => {
+  const c = judgeCoverage({
+    previousCheckedAt: "2026-09-17T17:35:00Z",
+    checkedAt: "2026-09-17T17:45:00Z",
+    expectedEveryMinutes,
+  });
+  assert.equal(c.minutes, 10);
+  assert.equal(c.blind, false);
+});
+
+
+test("judgeCoverage: tolerates GitHub being a few intervals late without crying wolf", () => {
+  const c = judgeCoverage({
+    previousCheckedAt: "2026-09-17T17:35:00Z",
+    checkedAt: "2026-09-17T18:05:00Z", // 30 min = 3 intervals, the limit
+    expectedEveryMinutes,
+  });
+  assert.equal(c.minutes, 30);
+  assert.equal(c.blind, false);
+});
+
+
+test("judgeCoverage: reports the real 2026-09-17 gap: 12:44Z to 17:35Z with nothing in between", () => {
+  const c = judgeCoverage({
+    previousCheckedAt: "2026-09-17T12:44:00Z",
+    checkedAt: "2026-09-17T17:35:00Z",
+    expectedEveryMinutes,
+  });
+  assert.equal(c.minutes, 291);
+  assert.equal(c.blind, true);
+  assert.match(c.note, /4\.8 hours/);
+  // It must blame the scheduler, not the site: this is the distinction the whole field exists for.
+  assert.match(c.note, /not the site/);
+});
+
+
+test("judgeCoverage: does not treat a re-run against older state as a gap", () => {
+  const c = judgeCoverage({
+    previousCheckedAt: "2026-09-17T18:00:00Z",
+    checkedAt: "2026-09-17T17:00:00Z",
+    expectedEveryMinutes,
+  });
+  assert.equal(c.minutes, null);
+  assert.equal(c.blind, false);
+});
+
+
+test("judgeCoverage: survives a corrupt or missing timestamp instead of throwing", () => {
+  for (const bad of ["", "not a date", undefined]) {
+    const c = judgeCoverage({ previousCheckedAt: bad, checkedAt: "2026-09-17T17:45:00Z", expectedEveryMinutes });
+    assert.equal(c.minutes, null);
+    assert.equal(c.blind, false);
+  }
 });

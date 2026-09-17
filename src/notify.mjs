@@ -30,6 +30,18 @@ export function composeEmail(result, runUrl) {
     return null;
   }
   lines.push("", `Pages checked: ${result.pages.length}`);
+  // An alert is only as fresh as the check behind it, and GitHub drops scheduled runs freely.
+  // Saying so in the email stops "DOWN at 14:05" being read as "went down at 14:05".
+  if (result.coverage?.minutes !== null && result.coverage?.minutes !== undefined) {
+    lines.push(`Previous check: ${result.coverage.minutes} minutes earlier.`);
+  }
+  if (result.coverage?.blind) {
+    lines.push(
+      "",
+      `⚠ ${result.coverage.note}`,
+      "So this may have started at any point in that window, not when the check ran.",
+    );
+  }
   if (runUrl) lines.push(`Run: ${runUrl}`);
   return { subject, text: lines.join("\n") };
 }
@@ -37,6 +49,10 @@ export function composeEmail(result, runUrl) {
 function summary(result) {
   const out = [`## ${result.site}: ${result.down ? "❌ DOWN" : "✅ up"}`, ""];
   if (result.change) out.push(`**Change:** ${result.change}`, "");
+  if (result.coverage?.minutes !== null && result.coverage?.minutes !== undefined) {
+    out.push(`**Previous check:** ${result.coverage.minutes} minutes earlier.`, "");
+  }
+  if (result.coverage?.blind) out.push(`> ⚠️ ${result.coverage.note}`, "");
   for (const p of result.problems) out.push(`- ${p}`);
   out.push("", "| Page | HTTP | Result |", "|---|---|---|");
   for (const page of result.pages) {

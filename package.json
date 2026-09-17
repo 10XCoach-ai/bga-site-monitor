@@ -1,0 +1,14 @@
+{
+  "name": "bga-site-monitor",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "check": "node src/check.mjs",
+    "notify": "node src/notify.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "25.11.0"
+  }
+}

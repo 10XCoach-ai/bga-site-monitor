@@ -1,0 +1,81 @@
+name: Site check
+
+on:
+  schedule:
+    # Every 2 hours — a deliberately safe default for a PRIVATE repository, whose minutes are shared
+    # with the platform's production deploy (see README, "Decide before merging").
+    # For every 30 minutes use "7,37 * * * *", only once the minutes question is settled.
+    # GitHub also starts scheduled runs late under load, often by 5–15 minutes.
+    - cron: "7 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      accept_articles:
+        description: "An article was removed on purpose: take today's sitemap as the new baseline"
+        type: boolean
+        default: false
+
+# Never let two checks write the state at the same time.
+concurrency:
+  group: site-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - run: npm test
+
+      # The state (was the site down last time, which articles existed) lives in the Actions cache.
+      # Cache entries are immutable, so each run saves under a new key and the next run restores the
+      # newest one by prefix.
+      - name: Restore last state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: site-state-${{ github.run_id }}
+          restore-keys: site-state-
+
+      - name: Check the site
+        id: check
+        continue-on-error: true
+        env:
+          ACCEPT_ARTICLES: ${{ inputs.accept_articles && 'true' || 'false' }}
+          # Chrome is preinstalled on GitHub's Ubuntu runners; check.mjs finds it.
+        run: node src/check.mjs
+
+      - name: Email on a change
+        if: always() && hashFiles('result.json') != ''
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO: ${{ vars.ALERT_TO }}
+          ALERT_FROM: ${{ vars.ALERT_FROM }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node src/notify.mjs
+
+      - name: Save state
+        if: always() && hashFiles('state/state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: site-state-${{ github.run_id }}
+
+      # A red run is the second signal: GitHub emails a failed scheduled run to whoever last changed
+      # the schedule. It stays red on every run while the site is down.
+      - name: Fail the run when the site is down
+        if: steps.check.outcome != 'success'
+        run: |
+          echo "The site check failed; see the step summary for what is wrong."
+          exit 1

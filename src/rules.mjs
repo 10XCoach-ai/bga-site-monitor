@@ -144,3 +144,28 @@ export function judgeCoverage({ previousCheckedAt, checkedAt, expectedEveryMinut
       `The site was not being watched for that period — this is GitHub's scheduler, not the site.`,
   };
 }
+
+/**
+ * How the long-running watcher paces itself inside a single GitHub Actions job.
+ *
+ * GitHub drops most scheduled runs (measured 2026-09-18: 4 of ~84 due 10-minute slots fired), so a
+ * cron that asks for a check every 10 minutes delivers one every few hours. The fix is not a denser
+ * cron — GitHub will not honour it — but a job that, once started, keeps checking on its own until
+ * just before GitHub's 6-hour job limit. The cron only has to START one such job every few hours,
+ * which the measurement shows it does.
+ *
+ * This is the one timing decision, kept pure so it can be tested without spawning anything.
+ *   startedAtMs      — Date.now() when the job's loop began
+ *   nowMs            — Date.now() after the check that just finished
+ *   maxRunMinutes    — how long the job may keep looping; 0 means a single check then stop
+ *   intervalMinutes  — the gap between checks inside the job
+ *
+ * Returns { stop, sleepMs }. We stop *before* a sleep-plus-check would run past the budget, so the
+ * job always ends on its own and its "save state" step runs — well inside GitHub's hard limit.
+ */
+export function loopPlan({ startedAtMs, nowMs, maxRunMinutes, intervalMinutes }) {
+  if (!(maxRunMinutes > 0)) return { stop: true, sleepMs: 0 };
+  const elapsedMinutes = (nowMs - startedAtMs) / 60_000;
+  if (elapsedMinutes + intervalMinutes >= maxRunMinutes) return { stop: true, sleepMs: 0 };
+  return { stop: false, sleepMs: Math.round(intervalMinutes * 60_000) };
+}

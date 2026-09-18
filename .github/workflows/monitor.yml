@@ -2,19 +2,16 @@ name: Site check
 
 on:
   schedule:
-    # Asked for every 10 minutes — NOT because the site needs watching that often, but because
-    # GitHub keeps only a fraction of the slots it is given. Measured on 2026-09-17, the repository's
-    # first day: of 14 scheduled runs due on the previous "7,37" (every 30 min) cron, exactly ONE
-    # ran, and that one 28 minutes late. Asking six times an hour is how you get a check an hour.
-    # Minutes are offset off :00 and :30, which is when GitHub's queue is most congested.
-    #
-    # This does NOT guarantee anything: we do not control GitHub's scheduler, and a dropped run is
-    # invisible from inside. That is what the gap report in src/rules.mjs `judgeCoverage` is for —
-    # every run says how long the site actually went unwatched, and a DOWN email carries it too.
+    # The cron no longer paces the checking — it only STARTS a long-running job that then checks
+    # every ~10 minutes on its own (see src/watch.mjs). GitHub drops most scheduled runs: measured
+    # 2026-09-18, of ~84 due slots on the previous every-10-minutes cron only 4 fired, ~one check
+    # every 2–4.5 hours. A dense cron does not fix that; a job that watches itself does. We keep the
+    # cron dense anyway so that, at any moment, a fresh run is queued as a warm standby ready to take
+    # over the instant the running job ends — `concurrency` below keeps exactly one such standby.
     #
     # ⚠️ This repository is PUBLIC, so standard runners cost no Actions minutes. If it is ever made
-    # private, LOWER THIS FIRST — at 6 runs/hour it would eat the organisation's free 2,000 minutes
-    # in days, and the platform's production deploy shares them (see README, "Actions minutes").
+    # private, the long-running job would consume them continuously — DO NOT run this design private
+    # without rethinking it; the platform's production deploy shares the org's 2,000 free minutes.
     - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
     inputs:
@@ -26,11 +23,14 @@ on:
         description: "Prove the alert emails actually arrive (sends one DOWN and one RECOVERED, to ALERT_TO)"
         type: boolean
         default: false
-
-# Never let two checks write the state at the same time.
-concurrency:
-  group: site-check
-  cancel-in-progress: false
+      loop_minutes:
+        description: "Run the watcher as a short loop for this many minutes (0 = a single check). Uses an isolated state; does not disturb the real monitor."
+        type: string
+        default: "0"
+      check_every_minutes:
+        description: "Gap between checks when loop_minutes > 0 (manual proof runs only)."
+        type: string
+        default: "10"
 
 permissions:
   contents: read
@@ -39,7 +39,23 @@ jobs:
   check:
     if: ${{ !inputs.prove_alerts }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A scheduled run keeps ONE job checking for ~5.5 h (below GitHub's 6 h hard limit); watch.mjs
+    # stops itself first so the "save state" step always runs. timeout-minutes is only a backstop.
+    timeout-minutes: 350
+    # Scheduled runs share one group, so exactly one watcher runs and exactly one waits as a warm
+    # standby (GitHub keeps a single pending run per group and cancels older pending ones). We do NOT
+    # cancel-in-progress: a new cron firing must not kill the running watcher, or its state would
+    # never be saved. Manual runs get a unique group so a proof run never queues behind the watcher.
+    concurrency:
+      group: ${{ github.event_name == 'schedule' && 'site-check' || format('site-check-manual-{0}', github.run_id) }}
+      cancel-in-progress: false
+    env:
+      # Scheduled = watch for ~5.5 h, every 10 min, against the real cached state.
+      # Manual = one check (loop_minutes 0) or a short isolated loop for proving the mechanism.
+      MAX_RUN_MINUTES: ${{ github.event_name == 'schedule' && '330' || inputs.loop_minutes }}
+      CHECK_EVERY_MINUTES: ${{ github.event_name == 'schedule' && '10' || inputs.check_every_minutes }}
+      STATE_FILE: ${{ github.event_name == 'schedule' && 'state/state.json' || 'manual/state.json' }}
+      RESULT_FILE: ${{ github.event_name == 'schedule' && 'result.json' || 'manual/result.json' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,46 +68,45 @@ jobs:
 
       - run: npm test
 
-      # The state (was the site down last time, which articles existed) lives in the Actions cache.
-      # Cache entries are immutable, so each run saves under a new key and the next run restores the
-      # newest one by prefix.
+      # The state (was the site down last time, which articles existed, when it was last checked)
+      # lives in the Actions cache between jobs. Only scheduled runs read and write it; a manual proof
+      # run keeps its own isolated state under manual/ and never touches this.
       - name: Restore last state
+        if: github.event_name == 'schedule'
         uses: actions/cache/restore@v4
         with:
           path: state
           key: site-state-${{ github.run_id }}
           restore-keys: site-state-
 
-      - name: Check the site
-        id: check
+      # One job, many checks. watch.mjs runs src/check.mjs then src/notify.mjs every CHECK_EVERY_MINUTES
+      # until MAX_RUN_MINUTES, emailing only on a change. continue-on-error so a DOWN site (exit 1)
+      # does not skip the state-save below; the real red/green is set by the final step.
+      - name: Watch the site
+        id: watch
         continue-on-error: true
-        env:
-          ACCEPT_ARTICLES: ${{ inputs.accept_articles && 'true' || 'false' }}
-          # Chrome is preinstalled on GitHub's Ubuntu runners; check.mjs finds it.
-        run: node src/check.mjs
-
-      - name: Email on a change
-        if: always() && hashFiles('result.json') != ''
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_TO: ${{ vars.ALERT_TO }}
           ALERT_FROM: ${{ vars.ALERT_FROM }}
+          ACCEPT_ARTICLES: ${{ inputs.accept_articles && 'true' || 'false' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node src/notify.mjs
+          # Chrome is preinstalled on GitHub's Ubuntu runners; check.mjs finds it.
+        run: node src/watch.mjs
 
       - name: Save state
-        if: always() && hashFiles('state/state.json') != ''
+        if: always() && github.event_name == 'schedule' && hashFiles('state/state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: state
           key: site-state-${{ github.run_id }}
 
-      # A red run is the second signal: GitHub emails a failed scheduled run to whoever last changed
-      # the schedule. It stays red on every run while the site is down.
+      # The second signal: a red run. GitHub emails a failed scheduled run to whoever last touched the
+      # workflow, and it stays red for as long as the last check in the job saw the site down.
       - name: Fail the run when the site is down
-        if: steps.check.outcome != 'success'
+        if: steps.watch.outcome != 'success'
         run: |
-          echo "The site check failed; see the step summary for what is wrong."
+          echo "The last check in this job saw the site down; see the step summary."
           exit 1
 
   # Proves the whole alert chain end-to-end: a real failing check, the real composeEmail, the real

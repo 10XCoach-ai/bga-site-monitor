@@ -7,6 +7,7 @@ import {
   judgeCoverage,
   judgePage,
   judgeSite,
+  loopPlan,
   nextArticles,
   parseSitemap,
   transition,
@@ -173,4 +174,35 @@ test("judgeCoverage: survives a corrupt or missing timestamp instead of throwing
     assert.equal(c.minutes, null);
     assert.equal(c.blind, false);
   }
+});
+
+const MIN = 60_000;
+
+test("loopPlan: MAX_RUN_MINUTES 0 means one check then stop (a manual single-shot run)", () => {
+  const p = loopPlan({ startedAtMs: 0, nowMs: 1000, maxRunMinutes: 0, intervalMinutes: 10 });
+  assert.deepEqual(p, { stop: true, sleepMs: 0 });
+});
+
+test("loopPlan: at the start of a 5.5 h job it keeps going and waits one interval", () => {
+  const started = Date.parse("2026-09-18T00:00:00Z");
+  const p = loopPlan({ startedAtMs: started, nowMs: started + 2 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
+  assert.equal(p.stop, false);
+  assert.equal(p.sleepMs, 10 * MIN);
+});
+
+test("loopPlan: stops before a sleep-plus-check would overrun the budget (job saves state)", () => {
+  const started = Date.parse("2026-09-18T00:00:00Z");
+  // 325 min elapsed, 10-min interval, 330 budget: 325 + 10 >= 330 -> stop now, do not sleep.
+  const stop = loopPlan({ startedAtMs: started, nowMs: started + 325 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
+  assert.deepEqual(stop, { stop: true, sleepMs: 0 });
+  // 319 min elapsed: 319 + 10 < 330 -> one more check fits.
+  const go = loopPlan({ startedAtMs: started, nowMs: started + 319 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
+  assert.equal(go.stop, false);
+});
+
+test("loopPlan: the boundary is exclusive so the job never runs past its budget", () => {
+  const started = 0;
+  // elapsed + interval exactly equals the budget -> stop, so the next check can't push us over.
+  const p = loopPlan({ startedAtMs: started, nowMs: started + 320 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
+  assert.equal(p.stop, true);
 });

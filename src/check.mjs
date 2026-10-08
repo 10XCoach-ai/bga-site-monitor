@@ -122,7 +122,17 @@ async function main() {
     if (blogFirst && judgePage(blogFirst).length === 0) {
       const all = new Set(blogFirst.articleLinks);
       for (let n = 2; n <= MAX_BLOG_PAGES; n++) {
-        const next = await observe(browser, `${SITE_URL}/blog?category=All&page=${n}`);
+        const url = `${SITE_URL}/blog?category=All&page=${n}`;
+        const next = await observe(browser, url);
+        // A later page that fails is not "the last page". Stopping here used to report the pages
+        // before it as the whole blog — "/blog lists 7 (or 31) but the sitemap has 42" on 2026-10-08,
+        // when page 2 (or 6) had failed to load. Report the page itself instead (it gets the same
+        // retry as every other page below), and make no count claim from a partial walk.
+        if (judgePage(next).length) {
+          pages.set(url, next);
+          blogFirst.countIncomplete = true;
+          break;
+        }
         const before = all.size;
         for (const slug of next.articleLinks ?? []) all.add(slug);
         if (all.size === before) break;
@@ -158,7 +168,7 @@ async function main() {
     ...judgeSite({
       previous: ACCEPT_ARTICLES ? null : previous,
       sitemapArticles,
-      blogListCount: blogHealthy ? blog.articleLinks.length : null,
+      blogListCount: blogHealthy && !blog.countIncomplete ? blog.articleLinks.length : null,
       brokenArticles,
     }),
   ];

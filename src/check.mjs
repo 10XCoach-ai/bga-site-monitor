@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import puppeteer from "puppeteer-core";
-import { articleSlug, judgeCoverage, judgePage, judgeSite, nextArticles, parseSitemap, transition } from "./rules.mjs";
+import { articleSlug, blogWalkStep, judgeCoverage, judgePage, judgeSite, nextArticles, parseSitemap, transition } from "./rules.mjs";
 
 const SITE_URL = (process.env.SITE_URL || "https://businessgrowth-alliance.com").replace(/\/+$/, "");
 const STATE_FILE = process.env.STATE_FILE || "state/state.json";
@@ -26,7 +26,8 @@ const EXPECTED_EVERY_MINUTES = Number(process.env.EXPECTED_EVERY_MINUTES ?? 10);
 const PAGE_TIMEOUT_MS = 45_000;
 // Let client-side rendering finish (and fail, if it is going to) after the network settles.
 const SETTLE_MS = 2_500;
-const MAX_BLOG_PAGES = 10;
+// 62 articles took 11 pages on 2026-10-29 (7 on the first, 6 on each after); 30 pages holds ~180.
+const MAX_BLOG_PAGES = 30;
 
 function chromePath() {
   const candidates = [
@@ -135,7 +136,9 @@ async function main() {
         }
         const before = all.size;
         for (const slug of next.articleLinks ?? []) all.add(slug);
-        if (all.size === before) break;
+        const step = blogWalkStep({ page: n, added: all.size - before, maxPages: MAX_BLOG_PAGES });
+        if (step === "cut-short") blogFirst.countIncomplete = true;
+        if (step !== "continue") break;
       }
       blogFirst.articleLinks = [...all];
     }

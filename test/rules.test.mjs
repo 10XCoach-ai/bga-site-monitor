@@ -4,6 +4,7 @@ import { composeEmail } from "../src/notify.mjs";
 import {
   ERROR_PAGE_TEXT,
   articleSlug,
+  blogWalkStep,
   judgeCoverage,
   judgePage,
   judgeSite,
@@ -205,4 +206,30 @@ test("loopPlan: the boundary is exclusive so the job never runs past its budget"
   // elapsed + interval exactly equals the budget -> stop, so the next check can't push us over.
   const p = loopPlan({ startedAtMs: started, nowMs: started + 320 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
   assert.equal(p.stop, true);
+});
+
+// The blog on 2026-10-29: 7 articles on page 1, then 6 per page, 62 in all, so page 11 holds the last one.
+function walk(perPage, maxPages) {
+  let seen = perPage[0];
+  for (let page = 2; ; page++) {
+    const added = perPage[page - 1] ?? 0;
+    seen += added;
+    const step = blogWalkStep({ page, added, maxPages });
+    if (step !== "continue") return { seen, step };
+  }
+}
+const blog62 = [7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 1];
+
+test("blogWalkStep: a 10-page cap on an 11-page blog is cut short, not a 61-article blog", () => {
+  assert.deepEqual(walk(blog62, 10), { seen: 61, step: "cut-short" });
+});
+
+test("blogWalkStep: with room to spare the walk reads all 62 and stops on the empty page", () => {
+  assert.deepEqual(walk(blog62, 30), { seen: 62, step: "done" });
+});
+
+test("blogWalkStep: a page that adds nothing ends the walk even on the last allowed page", () => {
+  assert.equal(blogWalkStep({ page: 10, added: 0, maxPages: 10 }), "done");
+  assert.equal(blogWalkStep({ page: 10, added: 1, maxPages: 10 }), "cut-short");
+  assert.equal(blogWalkStep({ page: 9, added: 6, maxPages: 10 }), "continue");
 });

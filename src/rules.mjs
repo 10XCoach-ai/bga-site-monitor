@@ -169,3 +169,17 @@ export function loopPlan({ startedAtMs, nowMs, maxRunMinutes, intervalMinutes })
   if (elapsedMinutes + intervalMinutes >= maxRunMinutes) return { stop: true, sleepMs: 0 };
   return { stop: false, sleepMs: Math.round(intervalMinutes * 60_000) };
 }
+
+/**
+ * Whether the /blog page walk goes on after page `page` added `added` new articles.
+ *
+ * "done" only when a page adds nothing, so the count is the whole blog. Hitting `maxPages` while pages
+ * still add articles is "cut-short": the walk saw part of the blog and must make no count claim. The
+ * walk used to stop at 10 pages and call that the whole blog — "/blog lists 61 but the sitemap has 62"
+ * on every run from 2026-10-26, when the 62nd article pushed the blog onto an 11th page.
+ */
+export function blogWalkStep({ page, added, maxPages }) {
+  if (added === 0) return "done";
+  if (page >= maxPages) return "cut-short";
+  return "continue";
+}

@@ -28,12 +28,13 @@ const startedAtMs = Date.now();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function runOnce() {
+  const t0 = Date.now();
   // check.mjs writes state/result; its exit code tells us what it found. Errors are printed by the
   // child (stdio inherited) — a non-zero exit is data here, not a reason to stop.
   const check = spawnSync(process.execPath, ["src/check.mjs"], { stdio: "inherit" });
   // notify.mjs emails only on a down/recovered change; a failure to send must not stop the loop.
   spawnSync(process.execPath, ["src/notify.mjs"], { stdio: "inherit" });
-  return { down: check.status === 1 };
+  return { down: check.status === 1, tookMs: Date.now() - t0 };
 }
 
 let checks = 0;
@@ -46,6 +47,7 @@ for (;;) {
     nowMs: Date.now(),
     maxRunMinutes: MAX_RUN_MINUTES,
     intervalMinutes: CHECK_EVERY_MINUTES,
+    lastCheckMs: last.tookMs,
   });
   if (plan.stop) break;
   console.log(`watch: ${checks} check(s) done in this job; next in ${Math.round(plan.sleepMs / 60_000)} min`);

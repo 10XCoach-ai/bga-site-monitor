@@ -1,6 +1,11 @@
 // Pure decisions, kept apart from the browser so they can be tested without one.
 
-/** Text the site shows when React has given up on the page (src/routes/__root.tsx, src/lib/error-page.ts). */
+/**
+ * The heading the site shows when React has given up on the page (src/routes/__root.tsx, src/lib/error-page.ts).
+ * Matched against the page's <h1>s and <title>, never against the body text: Google's own map error box says
+ * "This page didn't load Google Maps correctly", and from 2026-11-09 that sentence on /knuckies/locations (the
+ * Maps key is not authorised for the domain) read as a crashed page on every check, a false DOWN for 9 days.
+ */
 export const ERROR_PAGE_TEXT = "This page didn't load";
 export const NOT_FOUND_TEXT = "Page not found";
 
@@ -33,19 +38,20 @@ export function articleSlug(url) {
  * What is wrong with one rendered page, as short sentences. Empty = healthy.
  *
  * `observation` is what the browser saw:
- *   { url, status, text, hasHeader, articleLinks, error }
+ *   { url, status, text, headings, hasHeader, articleLinks, error }
+ * `headings` is the text of every <h1> plus the document <title>.
  * Uncaught script errors are reported by the caller but are NOT a failure on their own: third-party
  * scripts throw on healthy pages, and a crash that matters shows up as the error page or a blank page.
  */
 export function judgePage(observation) {
   const problems = [];
-  const { status, text = "", error } = observation;
+  const { status, text = "", headings = [], error } = observation;
   if (error) {
     problems.push(`did not load (${error})`);
     return problems;
   }
   if (typeof status === "number" && status >= 400) problems.push(`HTTP ${status}`);
-  if (text.includes(ERROR_PAGE_TEXT)) problems.push(`shows "${ERROR_PAGE_TEXT}"`);
+  if (headings.some((h) => String(h).trim() === ERROR_PAGE_TEXT)) problems.push(`shows "${ERROR_PAGE_TEXT}"`);
   else if (text.includes(NOT_FOUND_TEXT)) problems.push(`shows "${NOT_FOUND_TEXT}"`);
   else if (text.trim().length < MIN_TEXT_CHARS) problems.push(`nearly blank (${text.trim().length} characters of text)`);
   // A missing <h1> is not checked: /benchmarks has none by design, and the text checks above already
@@ -163,10 +169,13 @@ export function judgeCoverage({ previousCheckedAt, checkedAt, expectedEveryMinut
  * Returns { stop, sleepMs }. We stop *before* a sleep-plus-check would run past the budget, so the
  * job always ends on its own and its "save state" step runs — well inside GitHub's hard limit.
  */
-export function loopPlan({ startedAtMs, nowMs, maxRunMinutes, intervalMinutes }) {
+export function loopPlan({ startedAtMs, nowMs, maxRunMinutes, intervalMinutes, lastCheckMs = 0 }) {
   if (!(maxRunMinutes > 0)) return { stop: true, sleepMs: 0 };
   const elapsedMinutes = (nowMs - startedAtMs) / 60_000;
-  if (elapsedMinutes + intervalMinutes >= maxRunMinutes) return { stop: true, sleepMs: 0 };
+  // The next check takes about as long as the last one (~11 min for ~150 pages with a retry), and it runs
+  // AFTER the sleep. Leaving it out let a run reach 339 min against the workflow's 350-min hard limit.
+  const nextCheckMinutes = lastCheckMs / 60_000;
+  if (elapsedMinutes + intervalMinutes + nextCheckMinutes >= maxRunMinutes) return { stop: true, sleepMs: 0 };
   return { stop: false, sleepMs: Math.round(intervalMinutes * 60_000) };
 }
 

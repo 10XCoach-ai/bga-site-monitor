@@ -65,6 +65,7 @@ async function observe(browser, url) {
       return {
         text: document.body?.innerText ?? "",
         hasH1: Boolean(document.querySelector("h1")?.innerText?.trim()),
+        headings: [...document.querySelectorAll("h1")].map((h) => h.innerText ?? "").concat(document.title ?? ""),
         hasHeader: Boolean(document.querySelector("header")),
         articleLinks: [...slugs],
       };

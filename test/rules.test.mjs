@@ -37,9 +37,19 @@ test("a healthy page has no problems", () => {
 });
 
 test("the 2026-09-16 crash: the site's own error page is a failure even with HTTP 200", () => {
-  const problems = judgePage({ ...healthy, text: `${ERROR_PAGE_TEXT}\nSomething went wrong on our end.`, hasH1: true });
+  const problems = judgePage({ ...healthy, text: `${ERROR_PAGE_TEXT}\nSomething went wrong on our end.`, headings: [ERROR_PAGE_TEXT, "BGA"], hasH1: true });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /didn't load/);
+});
+
+test("the static error page is caught by its <title> alone", () => {
+  assert.match(judgePage({ ...healthy, headings: [ERROR_PAGE_TEXT] }).join(), /didn't load/);
+});
+
+test("2026-11-09 /knuckies/locations: Google's own map error box is not the site's error page", () => {
+  // Text as headless Chrome read it on 2026-11-18: the page rendered, only the map failed (RefererNotAllowedMapError).
+  const text = `Find your Knuckies.\n${body}\nOops! Something went wrong.\nThis page didn't load Google Maps correctly. See the JavaScript console for technical details.\n\nGoogle Maps is not authorized on this website address. Store addresses and directions remain available below.`;
+  assert.deepEqual(judgePage({ ...healthy, text, headings: ["Find your Knuckies.", "Find your Knuckies | Knuckies Sandwiches & SIPS"] }), []);
 });
 
 test("a blank page, a 404, a not-found page and a navigation error all fail", () => {
@@ -198,6 +208,15 @@ test("loopPlan: stops before a sleep-plus-check would overrun the budget (job sa
   assert.deepEqual(stop, { stop: true, sleepMs: 0 });
   // 319 min elapsed: 319 + 10 < 330 -> one more check fits.
   const go = loopPlan({ startedAtMs: started, nowMs: started + 319 * MIN, maxRunMinutes: 330, intervalMinutes: 10 });
+  assert.equal(go.stop, false);
+});
+
+test("loopPlan: counts the next check's own length, so a run cannot reach the 350-min hard limit", () => {
+  // 2026-11-18 run 44217689255: checks took ~11 min and the job ran 339.3 min. At 310 min, 310 + 10 sleep
+  // + 11 check = 331 >= 330 -> stop now.
+  const stop = loopPlan({ startedAtMs: 0, nowMs: 310 * MIN, maxRunMinutes: 330, intervalMinutes: 10, lastCheckMs: 11 * MIN });
+  assert.deepEqual(stop, { stop: true, sleepMs: 0 });
+  const go = loopPlan({ startedAtMs: 0, nowMs: 305 * MIN, maxRunMinutes: 330, intervalMinutes: 10, lastCheckMs: 11 * MIN });
   assert.equal(go.stop, false);
 });
 

@@ -9,6 +9,12 @@ on:
     # cron dense anyway so that, at any moment, a fresh run is queued as a warm standby ready to take
     # over the instant the running job ends — `concurrency` below keeps exactly one such standby.
     #
+    # The standby was not enough: in the 7 days to 2026-11-20 the site went unwatched 28.4 of 168
+    # hours (17%), in 15 gaps of up to 4 hours, because no scheduled run was waiting when a watcher
+    # ended. So each watcher now starts the next one itself as its last step (workflow_dispatch with
+    # watch=true, which counts as a real watch below). The cron stays as the fallback that restarts
+    # the chain if a run is ever lost.
+    #
     # ⚠️ This repository is PUBLIC, so standard runners cost no Actions minutes. If it is ever made
     # private, the long-running job would consume them continuously — DO NOT run this design private
     # without rethinking it; the platform's production deploy shares the org's 2,000 free minutes.
@@ -31,9 +37,15 @@ on:
         description: "Gap between checks when loop_minutes > 0 (manual proof runs only)."
         type: string
         default: "10"
+      watch:
+        description: "Run as the real watcher (real state, ~5.5 h, starts the next one when done). Set by the watcher itself; also restarts the chain by hand."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  # Only so a watcher can start the next one (gh workflow run). Nothing else is written.
+  actions: write
 
 jobs:
   check:
@@ -47,16 +59,20 @@ jobs:
     # cancel-in-progress: a new cron firing must not kill the running watcher, or its state would
     # never be saved. Manual runs get a unique group so a proof run never queues behind the watcher.
     concurrency:
-      group: ${{ github.event_name == 'schedule' && 'site-check' || format('site-check-manual-{0}', github.run_id) }}
+      group: ${{ (github.event_name == 'schedule' || inputs.watch) && 'site-check' || format('site-check-manual-{0}', github.run_id) }}
       cancel-in-progress: false
     env:
       # Scheduled = watch for ~5.5 h, every 10 min, against the real cached state.
       # Manual = one check (loop_minutes 0) or a short isolated loop for proving the mechanism.
-      MAX_RUN_MINUTES: ${{ github.event_name == 'schedule' && '330' || inputs.loop_minutes }}
-      CHECK_EVERY_MINUTES: ${{ github.event_name == 'schedule' && '10' || inputs.check_every_minutes }}
-      STATE_FILE: ${{ github.event_name == 'schedule' && 'state/state.json' || 'manual/state.json' }}
-      RESULT_FILE: ${{ github.event_name == 'schedule' && 'result.json' || 'manual/result.json' }}
+      MAX_RUN_MINUTES: ${{ (github.event_name == 'schedule' || inputs.watch) && '330' || inputs.loop_minutes }}
+      CHECK_EVERY_MINUTES: ${{ (github.event_name == 'schedule' || inputs.watch) && '10' || inputs.check_every_minutes }}
+      STATE_FILE: ${{ (github.event_name == 'schedule' || inputs.watch) && 'state/state.json' || 'manual/state.json' }}
+      RESULT_FILE: ${{ (github.event_name == 'schedule' || inputs.watch) && 'result.json' || 'manual/result.json' }}
     steps:
+      - name: Note the start time
+        id: started
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -72,7 +88,7 @@ jobs:
       # lives in the Actions cache between jobs. Only scheduled runs read and write it; a manual proof
       # run keeps its own isolated state under manual/ and never touches this.
       - name: Restore last state
-        if: github.event_name == 'schedule'
+        if: (github.event_name == 'schedule' || inputs.watch)
         uses: actions/cache/restore@v4
         with:
           path: state
@@ -95,11 +111,31 @@ jobs:
         run: node src/watch.mjs
 
       - name: Save state
-        if: always() && github.event_name == 'schedule' && hashFiles('state/state.json') != ''
+        if: always() && (github.event_name == 'schedule' || inputs.watch) && hashFiles('state/state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: state
           key: site-state-${{ github.run_id }}
+
+      # Hand over to the next watcher, so the site is never left unwatched between runs. The new run
+      # joins the same concurrency group, so it waits until this job has finished and saved its state.
+      # A failure here only costs the gap until the cron fires; it never hides a DOWN result.
+      # Only a job that really watched (an hour or more) hands over: one that broke in its first
+      # minutes would otherwise start the next broken one, forever, back to back.
+      - name: Start the next watch
+        if: always() && (github.event_name == 'schedule' || inputs.watch)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARTED_AT: ${{ steps.started.outputs.at }}
+        run: |
+          ran=$(( $(date +%s) - ${STARTED_AT:-$(date +%s)} ))
+          if [ "$ran" -lt 3600 ]; then
+            echo "This job ran only ${ran}s, so it does not start another; the cron will."
+            exit 0
+          fi
+          gh workflow run monitor.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" -f watch=true
+          echo "Started the next watch after ${ran}s."
 
       # The second signal: a red run. GitHub emails a failed scheduled run to whoever last touched the
       # workflow, and it stays red for as long as the last check in the job saw the site down.

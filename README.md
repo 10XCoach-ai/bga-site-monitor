@@ -80,6 +80,19 @@ run is queued as a **warm standby** (`concurrency` keeps exactly one pending and
 running one), and it takes over the instant the running job ends. The result is near-continuous
 10-minute coverage instead of a check every few hours.
 
+**The standby was not enough, so each watcher now starts the next one.** In the 7 days to
+2026-11-20 the site went unwatched **28.4 of 168 hours (17%), in 15 gaps of up to 4 hours**: when a
+watcher ended, no scheduled run was waiting. Now the last step of every watcher (one that ran at
+least an hour) runs `gh workflow run monitor.yml -f watch=true`. That run joins the same
+concurrency group, waits for this job to save its state, and takes over with the real state. The
+cron stays as the fallback that restarts the chain if a run is ever lost.
+
+- **To stop the monitor**, disable the workflow (Actions → Site check → ⋯ → Disable workflow).
+  Cancelling a run is not enough: its last step still starts the next one.
+- **To restart the chain by hand**, run the workflow with `watch` ticked.
+- A job that breaks in its first hour does not hand over, so a broken run cannot start the next
+  broken one back to back; the cron retries instead.
+
 Still built in, unchanged:
 
 - **Every check reports the gap since the last one**, and a DOWN email carries it. The run log says
